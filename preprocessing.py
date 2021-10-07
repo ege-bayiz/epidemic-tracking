@@ -29,6 +29,7 @@ sir = {'S': set(),
 S = []
 I = []
 R = []
+
 for month in [3]:
     print('Month : ', month)
     for day in tqdm(range(1,32)):
