@@ -10,7 +10,7 @@ r0 = 16 # Basic reproduction number (16 is typical for measles)
 INFECTIOUS_PERIOD = 8 # (8 is typical for measles)
 NUM_INFECTED = 100 # Initial infected population size
 
-months = [1]
+months = [2]
 sir = {'S': set(),
        'I': (set(), {}),
        'R': set()}
@@ -94,6 +94,8 @@ plt.xlabel('days')
 plt.ylabel('population')
 plt.legend()
 plt.grid()
+plt.axis('tight')
+plt.savefig('pop.svg', format="svg")
 
 plt.figure(figsize=(8, 6))
 plt.stackplot(range(np.size(S)), S/pop_size, I/pop_size, R/pop_size,
@@ -104,7 +106,10 @@ plt.xlabel('days')
 plt.ylabel('ratio')
 plt.legend()
 plt.grid()
+plt.axis('tight')
+plt.savefig('ratio.svg', format="svg")
 plt.show()
+
 
 
 

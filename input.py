@@ -104,7 +104,7 @@ for n in G.nodes:
         
 nx.set_node_attributes(G, attrs)
 G = G.to_directed()
-G_dgl = dgl.from_networkx(G, node_attrs=['health','age'], edge_attrs=['time_spent'])
+G_dgl = dgl.from_networkx(G, node_attrs=['health', 'age'], edge_attrs=['time_spent'])
 filename = '2020-{:02d}-{:02d}.dgl'.format(months[0], NUM_DAYS)
 dgl.save_graphs(filename, G_dgl)
 

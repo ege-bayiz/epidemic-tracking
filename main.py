@@ -1,6 +1,7 @@
 import dgl
-from dgl.nn import GraphConv
+import dgl.nn as dglnn
 from dgl.data import DGLDataset
+import dgl.function as dglfn
 
 import torch
 import torch.nn as nn
@@ -38,8 +39,10 @@ class Dataset(DGLDataset):
 class GCN(nn.Module):
     def __init__(self, in_feats, h_feats, num_classes):
         super(GCN, self).__init__()
-        self.conv1 = GraphConv(in_feats, h_feats)
-        self.conv2 = GraphConv(h_feats, num_classes)
+        self.conv1 = dglnn.GATConv(
+            in_feats=in_feats, out_feats=h_feats, aggregator_type='mean')
+        self.conv2 = dglnn.GATConv(
+            in_feats=h_feats,  out_feats=num_classes, aggregator_type='mean')
 
     def forward(self, g, in_feat):
         h = self.conv1(g, in_feat)
@@ -89,8 +92,10 @@ def train(g, model):
 def main():
     filename = '2020-01-31.dgl'
     name = "SIR"
-    dataset = Dataset(name=name,filename=filename)
+    dataset = Dataset(name=name, filename=filename)
     graph = dataset[0]
+    graph.update_all(dglfn.u_mul_e('age', 'time_spent', 'm'),
+                     dglfn.sum('m', 'age'))
     model = GCN(graph.ndata['age'].shape[1], 16, 3)
     train(graph, model)
 if __name__ == '__main__':
