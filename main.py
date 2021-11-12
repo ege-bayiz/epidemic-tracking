@@ -36,7 +36,7 @@ class Dataset(DGLDataset):
     def __len__(self):
         return 1
 
-class GCN(nn.Module):
+class GATConv(nn.Module):
     def __init__(self, in_feats, h_feats, num_classes):
         super(GCN, self).__init__()
         self.conv1 = dglnn.GATConv(
@@ -50,17 +50,39 @@ class GCN(nn.Module):
         h = self.conv2(g, h)
         return h
 
-def train(g, model):
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+class GCN(nn.Module):
+    def __init__(self, in_feats, h_feats, num_classes):
+        super(GCN, self).__init__()
+        self.conv1 = dglnn.GraphConv(in_feats, h_feats)
+        self.conv2 = dglnn.GraphConv(h_feats, num_classes)
+
+    def forward(self, g, in_feat):
+        h = self.conv1(g, in_feat)
+        h = F.relu(h)
+        h = self.conv2(g, h)
+        return h
+
+def train(g):
     best_val_acc = 0
     best_test_acc = 0
 
     features = g.ndata['age']
+    print(features.type())
     labels = g.ndata['health']
     train_mask = g.ndata['train_mask']
     val_mask = g.ndata['val_mask']
     test_mask = g.ndata['test_mask']
-    for e in range(100):
+    g.edata["time_spent"] = g.edata["time_spent"].type(dtype=torch.float64)
+    g.update_all(dglfn.copy_e("time_spent", "feat_copy"), dglfn.sum("feat_copy", "feat"))
+    features = g.ndata["feat"].clone().view(g.ndata["feat"].shape[0], 1).type(dtype=torch.long)   
+    print(features.shape)
+    print(features.type())
+
+
+    model = GCN(1, 16, 3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    for e in range(50):
         # Forward
         logits = model(g, features)
 
@@ -85,7 +107,7 @@ def train(g, model):
         loss.backward()
         optimizer.step()
 
-        if e % 5 == 0:
+        if e % 1 == 0:
             print('In epoch {}, loss: {:.3f}, val acc: {:.3f} (best {:.3f}), test acc: {:.3f} (best {:.3f})'.format(
                 e, loss, val_acc, best_val_acc, test_acc, best_test_acc))
 
@@ -94,9 +116,7 @@ def main():
     name = "SIR"
     dataset = Dataset(name=name, filename=filename)
     graph = dataset[0]
-    graph.update_all(dglfn.u_mul_e('age', 'time_spent', 'm'),
-                     dglfn.sum('m', 'age'))
-    model = GCN(graph.ndata['age'].shape[1], 16, 3)
-    train(graph, model)
+    
+    train(graph)
 if __name__ == '__main__':
     main()
