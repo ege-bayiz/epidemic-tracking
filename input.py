@@ -12,7 +12,7 @@ INFECTIOUS_PERIOD = 8 # (8 is typical for measles)
 NUM_INFECTED = 100 # Initial infected population size
 NUM_DAYS = 31
 
-months = [1]
+months = [7]
 sir = {'S': set(),
        'I': (set(), {}),
        'R': set()}
