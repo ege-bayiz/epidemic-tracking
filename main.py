@@ -10,6 +10,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import random
+
+USE_EDGE_FEATURES = True
+USE_NODE_FEATURES = True
+
 class Dataset(DGLDataset):
     def __init__(self, name, filename):
         self.filename = filename
@@ -26,9 +31,20 @@ class Dataset(DGLDataset):
         train_mask = torch.zeros(n_nodes, dtype=torch.bool)
         val_mask = torch.zeros(n_nodes, dtype=torch.bool)
         test_mask = torch.zeros(n_nodes, dtype=torch.bool)
-        train_mask[:n_train] = True
-        val_mask[n_train:n_train + n_val] = True
-        test_mask[n_train + n_val:] = True
+        pop = [*range(n_nodes)]
+        train_idx = random.sample(pop,n_train)
+        for train_i in train_idx:
+            pop.remove(train_i)
+        val_idx = random.sample(pop,n_val)
+        for val_i in val_idx:
+            pop.remove(val_i)
+        test_idx = pop
+        # train_mask[:n_train] = True
+        # val_mask[n_train:n_train + n_val] = True
+        # test_mask[n_train + n_val:] = True
+        train_mask[train_idx] = True
+        val_mask[val_idx] = True
+        test_mask[test_idx] = True
         self.graph.ndata['train_mask'] = train_mask
         self.graph.ndata['val_mask'] = val_mask
         self.graph.ndata['test_mask'] = test_mask
@@ -103,7 +119,7 @@ def train(g, date):
     print(features.shape)
     print(features.type())
 
-    for trial in range(200):
+    for trial in range(10):
         for k in range(len(algos)):
             best_val_acc = 0
             best_test_acc = 0
@@ -175,32 +191,39 @@ def plot(results):
     plt.show()
 
 def main():
-    filename = '2020-01-31.dgl'
-    date = "2020-01-31"
+    filename = '2020-05_spatiotemp.dgl'
+    date = "2020-05"
     name = "SIR"
     dataset = Dataset(name=name, filename=filename)
     graph = dataset[0]
-    results1 = train(graph, date)
+    results = train(graph, date)
 
-    filename = '2020-03-31.dgl'
-    date = "2020-03-31"
-    name = "SIR"
-    dataset = Dataset(name=name, filename=filename)
-    graph = dataset[0]
-    results2 = train(graph, date)
+    # filename = '2020-01-31.dgl'
+    # date = "2020-01-31"
+    # name = "SIR"
+    # dataset = Dataset(name=name, filename=filename)
+    # graph = dataset[0]
+    # results1 = train(graph, date)
 
-    filename = '2020-07-31.dgl'
-    date = "2020-07-31"
-    name = "SIR"
-    dataset = Dataset(name=name, filename=filename)
-    graph = dataset[0]
-    results3 = train(graph, date)
+    # filename = '2020-03-31.dgl'
+    # date = "2020-03-31"
+    # name = "SIR"
+    # dataset = Dataset(name=name, filename=filename)
+    # graph = dataset[0]
+    # results2 = train(graph, date)
 
-    results = results1.append(results2)
-    results = results.append(results3)
-    results.reset_index(inplace=True)
-    results.to_csv('convergence_results.csv', index=False)
-    print(results.head())
+    # filename = '2020-07-31.dgl'
+    # date = "2020-07-31"
+    # name = "SIR"
+    # dataset = Dataset(name=name, filename=filename)
+    # graph = dataset[0]
+    # results3 = train(graph, date)
+
+    # results = results1.append(results2)
+    # results = results.append(results3)
+    # results.reset_index(inplace=True)
+    results.to_csv('convergence_results_new.csv', index=False)
+    # print(results.head())
     plot(results)
 
 
