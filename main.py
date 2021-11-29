@@ -56,17 +56,30 @@ class Dataset(DGLDataset):
         return 1
 
 class GATConv(nn.Module):
-    def __init__(self, in_feats, h_feats, num_classes):
+    def __init__(self, in_feats, h_feats, e_feats, e_emb, num_classes):
         super(GATConv, self).__init__()
+        NUM_HEADS = 2
+        self.edge_encoder = nn.Linear(in_features=e_feats, out_features=e_emb)
         self.conv1 = dglnn.GATConv(
-            in_feats=in_feats, out_feats=h_feats, num_heads=2)
+            in_feats=in_feats, out_feats=h_feats, num_heads=NUM_HEADS)
+        self.inter = nn.Linear(in_features=NUM_HEADS*h_feats, out_features=h_feats)
         self.conv2 = dglnn.GATConv(
-            in_feats=h_feats,  out_feats=num_classes, num_heads=2)
+            in_feats=h_feats,  out_feats=num_classes, num_heads=1)
 
-    def forward(self, g, in_feat):
-        h = self.conv1(g, in_feat)
+
+    def forward(self, g, in_feat, e_feat):
+        e_feat_emb = self.edge_encoder(e_feat)
+        e_feat_emb = F.relu(e_feat_emb, inplace=True)
+        g.edata["e_feat_emb"] = e_feat_emb
+        g.update_all(dglfn.copy_e("e_feat_emb", "e_feat_emb_copy"), dglfn.sum("e_feat_emb_copy", "n_e_feat_emb"))
+        features_emb = g.ndata["n_e_feat_emb"].clone().view(g.ndata["n_e_feat_emb"].shape[0], 1)
+        features_concat = torch.cat([in_feat, features_emb], -1)
+        h = self.conv1(g, features_concat)
         h = F.relu(h)
+        h = h.permute(1, 0, 2).reshape((h.size(dim=0), h.size(dim=1)*h.size(dim=2)))
+        h = self.inter(h)
         h = self.conv2(g, h)
+        h = h.permute(1, 0, 2).reshape((h.size(dim=0), h.size(dim=1)*h.size(dim=2)))
         return h
 
 class SAGE(nn.Module):
@@ -97,8 +110,12 @@ class GCN(nn.Module):
         return h
 
 def train(g, date):
-    algos = [GCN, SAGE]
-    algo_names = ['graph-conv', 'graph-SAGE']
+    # algos = [GCN, SAGE, GATConv]
+    # algo_names = ['graph-conv', 'graph-SAGE', 'GAT-Conv']
+    # algos = [GCN]
+    # algo_names = ['graph-conv']
+    algos = [GATConv]
+    algo_names = ['GAT-Conv']
     results = pd.DataFrame({'epoch': [],
                             'loss': [],
                             'algorithm': [],
@@ -107,35 +124,61 @@ def train(g, date):
                             'train_acc': [],
                             'validation_acc': [],
                             'test_acc': []})
-    features = g.ndata['age'].type(dtype=torch.float32)
-    print(features.type())
+    # print(features.type())
     labels = g.ndata['health']
     train_mask = g.ndata['train_mask']
     val_mask = g.ndata['val_mask']
     test_mask = g.ndata['test_mask']
+    # Type 1: Use age features
+    g.ndata['age'] = g.ndata['age'].type(dtype=torch.float32).view(g.ndata['age'].shape[0], 1)
+    features_age= g.ndata['age'].clone()
+    print(features_age.shape)
+    print(features_age.type())
+    # Type 2: Use aggregated timespent features
     g.edata["time_spent"] = g.edata["time_spent"].type(dtype=torch.float32)
     g.update_all(dglfn.copy_e("time_spent", "feat_copy"), dglfn.sum("feat_copy", "feat"))
-    features = g.ndata["feat"].clone().view(g.ndata["feat"].shape[0], 1)  # .type(dtype=torch.long)
-    print(features.shape)
-    print(features.type())
+    g.ndata["feat"] = g.ndata["feat"].view(g.ndata["feat"].shape[0], 1)
+    features_agg_ts = g.ndata["feat"].clone()
+    print(features_agg_ts.shape)
+    print(features_agg_ts.type())
+    # Type 3: Use age and aggregated timespent features by concating them
+    g.apply_nodes(lambda nodes: {'concat': torch.cat([nodes.data['age'], nodes.data["feat"]], -1)})
+    features_concat = g.ndata["concat"].clone()
+    print(features_concat.shape)
+    print(features_concat.type())
+    # Type 4: Use age and timespent features separately to encode edge features in forward pass and then concat
+    g.edata["time_spent"] = g.edata["time_spent"].view(g.edata["time_spent"].shape[0], 1)
+    features_edge = g.edata["time_spent"].clone()
+    print(features_edge.shape)
+    print(features_edge.type())
 
     for trial in range(10):
         for k in range(len(algos)):
             best_val_acc = 0
             best_test_acc = 0
 
-            model = algos[k](1, 16, 3)
+            if algo_names[k] == 'GAT-Conv':
+                model = algos[k](2, 16, 1, 1, 3)
+            else:
+                model = algos[k](1, 16, 3)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
             for e in range(100):
                 # Forward
-                logits = model(g, features)
+                if algo_names[k] == 'GAT-Conv':
+                    logits = model(g, features_age, features_edge)
+                else:
+                    logits = model(g, features_agg_ts)
 
                 # Compute prediction
-                pred = logits.argmax(1)
+                pred = logits.argmax(-1)
                 # Compute loss
                 # Note that you should only compute the losses of the nodes in the training set.
-                loss = F.cross_entropy(logits[train_mask], labels[train_mask])
+                if algo_names[k] == 'GAT-Conv':
+                    logp = F.log_softmax(logits, 1)
+                    loss = F.nll_loss(logp[train_mask], labels[train_mask])
+                else:
+                    loss = F.cross_entropy(logits[train_mask], labels[train_mask])
 
                 # Compute accuracy on training/validation/test
                 train_acc = (pred[train_mask] == labels[train_mask]).float().mean()
