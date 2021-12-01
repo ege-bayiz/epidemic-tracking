@@ -1,8 +1,13 @@
 import dgl
+from tqdm import tqdm
 import dgl.nn as dglnn
 from dgl.data import DGLDataset
 import dgl.function as dglfn
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import precision_recall_fscore_support as calc_scores
 import pandas as pd
+import pickle
+import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -14,6 +19,8 @@ import random
 
 USE_EDGE_FEATURES = True
 USE_NODE_FEATURES = True
+NUM_EPOCHS = 50
+NUM_TRIALS = 100
 
 class Dataset(DGLDataset):
     def __init__(self, name, filename):
@@ -110,12 +117,12 @@ class GCN(nn.Module):
         return h
 
 def train(g, date):
-    # algos = [GCN, SAGE, GATConv]
-    # algo_names = ['graph-conv', 'graph-SAGE', 'GAT-Conv']
-    # algos = [GCN]
-    # algo_names = ['graph-conv']
-    algos = [GATConv]
-    algo_names = ['GAT-Conv']
+    algos = [GCN, SAGE, GATConv]
+    algo_names = ['graph-conv', 'graph-SAGE', 'GAT-Conv']
+    #algos = [GCN]
+    #algo_names = ['graph-conv']
+    #algos = [GATConv]
+    #algo_names = ['GAT-Conv']
     results = pd.DataFrame({'epoch': [],
                             'loss': [],
                             'algorithm': [],
@@ -152,8 +159,14 @@ def train(g, date):
     print(features_edge.shape)
     print(features_edge.type())
 
-    for trial in range(10):
-        for k in range(len(algos)):
+    confusions = dict()
+    weighted_scores = dict()
+
+    for algo in tqdm(algo_names, position=0, desc="Algo", leave=False, colour='green', ncols=80):
+        confusions[algo] = np.zeros((NUM_TRIALS, 3, 3))
+        weighted_scores[algo] = np.zeros(4)
+    for trial in tqdm(range(NUM_TRIALS), position=0, desc="Trial", leave=False, colour='red', ncols=80):
+        for k in tqdm(range(len(algos)), position=1, desc="Algo", leave=False, colour='green', ncols=80):
             best_val_acc = 0
             best_test_acc = 0
 
@@ -161,9 +174,16 @@ def train(g, date):
                 model = algos[k](2, 16, 1, 1, 3)
             else:
                 model = algos[k](1, 16, 3)
+
+            if torch.cuda.is_available():
+                device = 'cuda'
+            else:
+                device = 'cpu'
+            model.to(device)
+
             optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
-            for e in range(100):
+            for e in tqdm(range(NUM_EPOCHS), position=2, desc="Epoch", leave=False, colour='blue', ncols=80):
                 # Forward
                 if algo_names[k] == 'GAT-Conv':
                     logits = model(g, features_age, features_edge)
@@ -175,8 +195,27 @@ def train(g, date):
                 # Compute loss
                 # Note that you should only compute the losses of the nodes in the training set.
                 if algo_names[k] == 'GAT-Conv':
-                    logp = F.log_softmax(logits, 1)
-                    loss = F.nll_loss(logp[train_mask], labels[train_mask])
+                    gamma = 10.
+                    N_0 = (labels[train_mask] == 0).sum()
+                    N_1 = (labels[train_mask] == 1).sum()
+                    N_2 = (labels[train_mask] == 2).sum()
+                    beta_0 = (N_0 - 1) / N_0
+                    beta_1 = (N_1 - 1) / N_1
+                    beta_2 = (N_2 - 1) / N_2 if N_2 > 0 else 1.
+                    alpha_0 = (1 - beta_0) / (1 - beta_0 ** N_0)
+                    alpha_1 = (1 - beta_1) / (1 - beta_1 ** N_1)
+                    alpha_2 = (1 - beta_2) / (1 - beta_2 ** N_2) if N_2 > 0 else 0.
+                    weight = torch.tensor([[alpha_0, alpha_1, alpha_2]])
+                    onehot_labels = nn.functional.one_hot(labels[train_mask], num_classes=3)
+                    inverter = torch.ones_like(onehot_labels)
+                    inverter[onehot_labels == 0] = torch.sub(inverter[onehot_labels == 0], 2)
+                    z = logits[train_mask] * inverter
+                    p = torch.sigmoid(z)
+                    to_be_summed = ((1 - p) ** gamma) * torch.log(p)
+                    weights = torch.ones_like(onehot_labels) * weight
+                    weights = torch.sum(weights * onehot_labels, axis=1)
+                    loss = -(torch.sum(to_be_summed, dim=1) * weights)
+                    loss = loss.mean()
                 else:
                     loss = F.cross_entropy(logits[train_mask], labels[train_mask])
 
@@ -184,6 +223,12 @@ def train(g, date):
                 train_acc = (pred[train_mask] == labels[train_mask]).float().mean()
                 val_acc = (pred[val_mask] == labels[val_mask]).float().mean()
                 test_acc = (pred[test_mask] == labels[test_mask]).float().mean()
+
+                # Compute confusion matrix
+                if e == NUM_EPOCHS - 1:
+                    confusions[algo_names[k]][trial,:,:] = confusion_matrix(labels[test_mask], pred[test_mask], labels=[0,1,2])
+                    # scores = calc_scores(labels[test_mask], pred[test_mask])
+                    weighted_scores[algo_names[k]] = calc_scores(labels[test_mask], pred[test_mask], average='weighted')
 
                 # Save the best validation accuracy and the corresponding test accuracy.
                 if best_val_acc < val_acc:
@@ -196,9 +241,9 @@ def train(g, date):
                 optimizer.step()
 
 
-                if e % 99 == 0:
-                    print('Trial: {} - In epoch {}, loss: {:.3f}, val acc: {:.3f} (best {:.3f}), test acc: {:.3f} (best {:.3f})'.format(
-                        trial, e, loss, val_acc, best_val_acc, test_acc, best_test_acc))
+                # if e % 49 == 0:
+                #     print('Trial: {} - In epoch {}, loss: {:.3f}, val acc: {:.3f} (best {:.3f}), test acc: {:.3f} (best {:.3f})'.format(
+                #         trial, e, loss, val_acc, best_val_acc, test_acc, best_test_acc))
 
                 results = results.append({'epoch': e,
                                 'loss': loss.item(),
@@ -208,38 +253,75 @@ def train(g, date):
                                 'train_acc': train_acc.item(),
                                 'validation_acc': val_acc.item(),
                                 'test_acc': test_acc.item()}, ignore_index=True)
-    return results
 
-def plot(results):
+    return results, confusions, weighted_scores
+
+def plot(results, confusions):
+    """
     plt.figure()
     sns.set_theme(style="darkgrid")
     sns.lineplot(data=results, x="epoch", y="train_acc", hue="algorithm")
     plt.title("Training Accuracy")
+    """
 
     plt.figure()
     sns.set_theme(style="darkgrid")
     sns.lineplot(data=results, x="epoch", y="test_acc", hue="algorithm")
     plt.title("Test Accuracy")
 
+    for k in confusions:
+        confusions[k] = confusions[k].mean(axis=0)
+        # sum_of_rows = confusions[k].sum(axis=1)
+        # confusions[k] = confusions[k] / sum_of_rows[:, np.newaxis]
+        # sum_of_cols = confusions[k].sum(axis=0)
+        # confusions[k] = confusions[k] / sum_of_cols[np.newaxis, :]
+        total = confusions[k].sum()
+        confusions[k] = confusions[k] / total
+
+
+    categories = ['Susceptible', 'Infected', 'Recovered']
+
     df = results.query("algorithm == 'graph-conv'")
-    plt.figure()
-    sns.set_theme(style="darkgrid")
-    sns.lineplot(data=df, x="epoch", y="train_acc", hue="date")
-    plt.title("Training Accuracy of GCN")
 
     plt.figure()
     sns.set_theme(style="darkgrid")
-    sns.lineplot(data=df, x="epoch", y="test_acc", hue="date")
-    plt.title("Test Accuracy of GCN")
+    ax = sns.heatmap(confusions['graph-conv'], annot=True)
+    ax.xaxis.set_ticklabels(categories)
+    ax.yaxis.set_ticklabels(categories)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('Ground Truth');
+    #sns.lineplot(data=df, x="epoch", y="test_acc", hue="date")
+    plt.title("Confusion Matrix of GCN")
+
+    plt.figure()
+    sns.set_theme(style="darkgrid")
+    ax = sns.heatmap(confusions['GAT-Conv'], annot=True)
+    ax.xaxis.set_ticklabels(categories)
+    ax.yaxis.set_ticklabels(categories)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('Ground Truth');
+    # sns.lineplot(data=df, x="epoch", y="test_acc", hue="date")
+    plt.title("Confusion Matrix of GAT")
+
+    plt.figure()
+    sns.set_theme(style="darkgrid")
+    ax = sns.heatmap(confusions['graph-SAGE'], annot=True)
+    ax.xaxis.set_ticklabels(categories)
+    ax.yaxis.set_ticklabels(categories)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('Ground Truth')
+    # sns.lineplot(data=df, x="epoch", y="test_acc", hue="date")
+    plt.title("Confusion Matrix of GraphSAGE")
     plt.show()
 
+
 def main():
-    filename = '2020-05_spatiotemp.dgl'
-    date = "2020-05"
+    filename = '2020-04_spatiotemp.dgl'
+    date = "2020-04"
     name = "SIR"
     dataset = Dataset(name=name, filename=filename)
     graph = dataset[0]
-    results = train(graph, date)
+    results, confusions, weighted_scores = train(graph, date)
 
     # filename = '2020-01-31.dgl'
     # date = "2020-01-31"
@@ -266,8 +348,21 @@ def main():
     # results = results.append(results3)
     # results.reset_index(inplace=True)
     results.to_csv('convergence_results_new.csv', index=False)
+    with open('confusions.pickle', 'wb') as handle:
+       pickle.dump(confusions, handle)
+    with open('scores.pickle', 'wb') as handle:
+       pickle.dump(weighted_scores, handle)
+
+    # with open('confusions.pickle', 'rb') as handle:
+    #     confusions = pickle.load(handle)
+    # with open('scores.pickle', 'rb') as handle:
+    #     weighted_scores = pickle.load(handle)
+    # results = pd.read_csv('convergence_results_new.csv')
+
     # print(results.head())
-    plot(results)
+    #print(confusions)
+    print(weighted_scores)
+    plot(results, confusions)
 
 
 if __name__ == '__main__':

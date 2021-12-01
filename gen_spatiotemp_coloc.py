@@ -10,12 +10,13 @@ import copy
 from pathlib import Path
 
 r0 = 16 # Basic reproduction number (16 is typical for measles)
-INFECTIOUS_PERIOD = 8 # (8 is typical for measles)
+INFECTIOUS_PERIOD = 14 # (8 is typical for measles)
 NUM_INFECTED = 100 # Initial infected population size
-NUM_DAYS = 8
+NUM_DAYS = 30
+NUM_DAYS_IN_OUT = 8
 SPATIO_TEMPORAL = True # True to create spatio-temporal graph, False to have each day separately
 
-months = [5]
+months = [4]
 sir = {'S': set(),
        'I': (set(), {}),
        'R': set()}
@@ -236,6 +237,16 @@ for n in G_spatiotemp.nodes:
 nx.set_node_attributes(G_spatiotemp, attrs)
 G_spatiotemp.remove_nodes_from(list(nx.isolates(G_spatiotemp)))
 G_spatiotemp = G_spatiotemp.to_directed()
+
+nodes = []
+for n in G_spatiotemp.nodes:
+    day = n[-2:]
+    mon = n[-5:-3]
+    if int(n[-2:]) == months[-1] and int(n[-5:-3]) >= NUM_DAYS - NUM_DAYS_IN_OUT:
+        nodes.append(n)
+
+G_spatiotemp = nx.subgraph(G_spatiotemp, nodes)
+
 filename = '2020'
 for month in months:
     month_ = str(month) if month//10>1 else "0"+str(month)
@@ -253,6 +264,7 @@ else:
     filename_dgl = filename+".dgl"
 dgl.save_graphs(filename_dgl, G_dgl)
 #########################   
+
 
 
 # filename = 'Data/2020/{:02d}/2020-{:02d}-{:02d}.gexf'.format(months[0], months[0], NUM_DAYS)

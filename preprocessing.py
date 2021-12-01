@@ -7,10 +7,12 @@ import scipy.stats as stat
 from enum import Enum
 
 r0 = 16 # Basic reproduction number (16 is typical for measles)
-INFECTIOUS_PERIOD = 8 # (8 is typical for measles)
+INFECTIOUS_PERIOD = 14 # (8 is typical for measles)
 NUM_INFECTED = 100 # Initial infected population size
+NUM_DAYS = 30
+NUM_DAYS_IN_OUT = 8
 
-months = [2]
+months = [4]
 sir = {'S': set(),
        'I': (set(), {}),
        'R': set()}
